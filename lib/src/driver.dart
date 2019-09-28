@@ -108,8 +108,9 @@ class Driver {
 
     for (var root in analysisRoots) {
       if (cmd.continueAnalyzing) {
+        // TODO move this to the config file
         AnalysisContextCollection collection = AnalysisContextCollection(
-            includedPaths: [root], resourceProvider: resourceProvider);
+            includedPaths: [root], excludedPaths: ['$root/example', '$root/test'], resourceProvider: resourceProvider);
 
         for (AnalysisContext context in collection.contexts) {
           // Add custom lints.
@@ -135,6 +136,19 @@ class Driver {
           preAnalyze(context, subDir: dir != root);
 
           for (String filePath in context.contextRoot.analyzedFiles()) {
+            if (optionsVisitor != null) {
+              if (AnalysisEngine.isAnalysisOptionsFileName(filePath)) {
+                optionsVisitor.visit(AnalysisOptionsFile(filePath));
+              }
+            }
+
+            // TODO(dit): how to skip the analysis if a PubSpecCollector or something else says so?
+            if (pubspecVisitor != null) {
+              if (path.basename(filePath) == 'pubspec.yaml') {
+                pubspecVisitor.visit(PubspecFile(filePath));
+              }
+            }
+
             if (AnalysisEngine.isDartFileName(filePath)) {
               try {
                 final result = resolveUnits
@@ -159,18 +173,6 @@ class Driver {
               } catch (e) {
                 print('Exception caught analyzing: $filePath');
                 print(e.toString());
-              }
-            }
-
-            if (optionsVisitor != null) {
-              if (AnalysisEngine.isAnalysisOptionsFileName(filePath)) {
-                optionsVisitor.visit(AnalysisOptionsFile(filePath));
-              }
-            }
-
-            if (pubspecVisitor != null) {
-              if (path.basename(filePath) == 'pubspec.yaml') {
-                pubspecVisitor.visit(PubspecFile(filePath));
               }
             }
           }
