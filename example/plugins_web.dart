@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:analyzer/dart/analysis/analysis_context.dart';
@@ -15,27 +16,33 @@ import 'package:surveyor/src/visitors.dart';
 
 final Set<String> evilLibraries = {
   'dart:io',
+  'dart:_http', // Reexported from dart:io 
+  'dart:_internal', // Reexported from dart:io
 };
 
+final String _kCreatesInstanceKey = 'createsInstance';
 final String _kImportsEvilLibraryKey = 'importsEvilLibrary';
-final String _kExportsEvilLibraryKey = 'exportsEvilLibrary';
 final String _kUsesEvilLibraryKey = 'privateReturnsEvilLibrary';
 final String _kExposesEvilLibraryKey = 'publicReturnsEvilLibrary';
 final String _kCallsMethodsOfEvilLibraryKey = 'callsEvilLibrary';
 
-final List<dynamic> csvHeader = [
+final List<String> csvHeader = [
   "Plugin",
   "# Imports",
-  "# Exports",
   "# Private returns",
   "# Public returns",
   "# Calls",
+  "# Instantiations",
   "Imports",
-  "Exports",
   "Private returns",
   "Public returns",
   "Calls",
+  "Instantiations",
+  "!!!"
 ];
+
+// https://github.com/dart-lang/sdk/issues/2626 :sad_trombone:
+// typedef PluginProblems = Map<String, Map<String, Set<Problem>>>;
 
 /// Checks if a plugin is going to be easy/hard to port/use in flutter web.
 /// 
@@ -77,27 +84,95 @@ main(List<String> args) async {
   print('Writing out.csv...');
   File('out.csv').writeAsStringSync(csv);
 
+  print('Writing histograms...');
+
+  String callsCsv = const ListToCsvConverter().convert(_formatHistogram(_getHistogram(pluginMetadata, _kCallsMethodsOfEvilLibraryKey), "Method"));
+  File('calls.csv').writeAsStringSync(callsCsv);
+  
+  String constructorsCsv = const ListToCsvConverter().convert(_formatHistogram(_getHistogram(pluginMetadata, _kCreatesInstanceKey), "Constructor"));
+  File('constructors.csv').writeAsStringSync(constructorsCsv);
+
   print(
       '(Elapsed time: ${Duration(milliseconds: stopwatch.elapsedMilliseconds)})');
 }
 
+class HistogramValue {
+  int totalHits;
+  Set<String> uniques = {};
+
+  HistogramValue(value) {
+    totalHits = 1;
+    uniques.add(value);
+  }
+
+  void addHit(String value) {
+    totalHits++;
+    uniques.add(value);
+  }
+  @override
+  String toString() {
+    return '$totalHits - $uniques';
+  }
+}
+
+// Counts all distincts values of a given 'key' in the set of Problems
+Map<String, HistogramValue> _getHistogram(Map<String, Map<String, Set<Problem>>> metadata, String key) {
+  Map<String, HistogramValue> histogram = <String, HistogramValue>{};
+
+  metadata.forEach((String plugin, Map<String, Set<Problem>> meta) {
+    meta[key].forEach((Problem problem) {
+      histogram.update(problem.description, (HistogramValue currentValue) => currentValue..addHit(plugin), ifAbsent: () => HistogramValue(plugin));
+    });
+  });
+
+  return histogram;
+}
+
+// Formats the histogram as CSV
+List<List<dynamic>> _formatHistogram(Map<String, HistogramValue> histogram, String key) {
+  List<List<dynamic>> out = [[key, "Count", "Uniques"]];
+
+  histogram.forEach((String description, HistogramValue value) {
+    out.add([description, value.totalHits, value.uniques.length]);
+  });
+
+  return out;
+}
+
 // Formats the output 
-List<List<dynamic>> _formatOutput(Map<String, Map<String, dynamic>> metadata) {
+List<List<dynamic>> _formatOutput(Map<String, Map<String, Set<Problem>>> metadata) {
   List<List<dynamic>> output = [csvHeader];
 
-  metadata.forEach((String plugin, Map<String, dynamic> meta) {
+  metadata.forEach((String plugin, Map<String, Set<Problem>> meta) {
+    // Warn of libraries where we detected imports, but nothing else!
+    int numProblems = 0;
+    int numImports = meta[_kImportsEvilLibraryKey].length;
+
+    meta.forEach((key, Set<Problem> problems) {
+      numProblems += problems.length;
+    });
+
+    bool shouldBeReviewed = 
+      (numImports > 0 && (numProblems <= numImports)) // Unused imports?
+      || (numImports == 0 && numProblems > 0); // Used bad lib without imports?
+
+    if (shouldBeReviewed) {
+      print('*** Needs review: $plugin');
+    }
+
     output.add([
       plugin,
       meta[_kImportsEvilLibraryKey].length,
-      meta[_kExportsEvilLibraryKey].length,
       meta[_kUsesEvilLibraryKey].length,
       meta[_kExposesEvilLibraryKey].length,
-      meta[_kCallsMethodsOfEvilLibraryKey] .length,
+      meta[_kCallsMethodsOfEvilLibraryKey].length,
+      meta[_kCreatesInstanceKey].length,
       meta[_kImportsEvilLibraryKey].join("\n"),
-      meta[_kExportsEvilLibraryKey].join("\n"),
       meta[_kUsesEvilLibraryKey].join("\n"),
       meta[_kExposesEvilLibraryKey].join("\n"),
       meta[_kCallsMethodsOfEvilLibraryKey].join("\n"),
+      meta[_kCreatesInstanceKey].join("\n"),
+      shouldBeReviewed ? "*":"",
     ]);
   });
 
@@ -107,10 +182,20 @@ List<List<dynamic>> _formatOutput(Map<String, Map<String, dynamic>> metadata) {
 int dirCount;
 
 Set<String> plugins = {};
-Map<String, Map<String, dynamic>> pluginMetadata = Map();
+// plugin -> category -> Set<Problem>
+Map<String, Map<String, Set<Problem>>> pluginMetadata = Map();
+
+class Problem {
+  String location;
+  String description;
+  String library;
+  Problem(this.location, this.description, [this.library]);
+  @override
+  String toString() => '$location${library != null ? " - " + library : ""} - $description';
+}
 
 /// If non-zero, stops once limit is reached (for debugging).
-int _debuglimit; //500;
+int _debuglimit; // = 500;
 
 // Marks which packages are flutter plugins by looking at their pubspec.
 class WebPluginIdentifier extends PubspecVisitor {
@@ -122,11 +207,12 @@ class WebPluginIdentifier extends PubspecVisitor {
       pluginClass = file.yaml['flutter']['plugin']['pluginClass'];
       plugins.add(baseDir);
       pluginMetadata[baseDir] = Map.from({
-        _kImportsEvilLibraryKey: <String>{},
-        _kExportsEvilLibraryKey: <String>{},
-        _kUsesEvilLibraryKey: <String>{},
-        _kExposesEvilLibraryKey: <String>{},
-        _kCallsMethodsOfEvilLibraryKey: <String>{},
+        _kImportsEvilLibraryKey: <Problem>{},
+        // _kExportsEvilLibraryKey: <String>{},
+        _kUsesEvilLibraryKey: <Problem>{},
+        _kExposesEvilLibraryKey: <Problem>{},
+        _kCallsMethodsOfEvilLibraryKey: <Problem>{},
+        _kCreatesInstanceKey: <Problem>{},
         // Conditional imports? Other things?
       });
     } catch(e) {
@@ -145,13 +231,54 @@ class WebPluginsCollector extends RecursiveAstVisitor
   LineInfo lineInfo;
   String get currentPlugin => path.basename(currentFolder.path);
   String get currentFile => filePath.replaceAll(currentFolder.path, '');
+  Set<String> exports = <String>{}; // Keep track of the "exports" of this package, to see what's private/public
 
   WebPluginsCollector();
 
-  // Returns filename@line:column - extra_info
-  String _getPrettyLocation(int nodeOffset, String extraInfo) {
+  // Returns a boolean indicating if the currently observed symbol is
+  // considered public or private
+  bool _isPrivate(int nodeOffset, { String methodName }) {
+    if (methodName.startsWith('_')) {
+      return true;
+    } else {
+      // Check if we're looking inside /lib
+      String currentDir = path.dirname(currentFile);
+      if (currentDir == '/lib') {
+        return false; // Public method defined on public file -> public
+      } else {
+        // Check if the currentFile has been exported...
+        final bool exported = exports.toList().any((export) => currentFile.endsWith(export));
+        return !exported;
+      }
+    }
+  }
+
+  // Returns filename@line:column [extraInfo]
+  String _getPrettyLocation(int nodeOffset, {String extraInfo}) {
     var location = lineInfo.getLocation(nodeOffset);
-    return '$currentFile@${location.lineNumber}:${location.columnNumber} - $extraInfo';
+    String prettyLocation = '$currentFile@${location.lineNumber}:${location.columnNumber}';
+    if (extraInfo != null) {
+      prettyLocation += ' $extraInfo';
+    }
+    return prettyLocation;
+  }
+
+  // Converts Future<T> and FutureOr<T> (and other <T>s) to T
+  FutureOr<DartType> _flattenType(DartType type) async {
+    DartType flattened;
+    
+    // Speed up tdlib, because await typeSystem is slowww in that pkg (ended up deleting the pkg ;) )
+    // if (!type.displayName.contains('<') || type.displayName.startsWith('Map<')) return type;
+    if (type?.element?.session != null) {
+      TypeSystem ts = await type.element.session.typeSystem;
+      flattened = ts.flatten(type);
+    }
+    return flattened;
+  }
+
+  // Returns the name of the library where a (flattened) type is defined
+  FutureOr<String> _getLibraryForType(DartType type) {
+    return type?.element?.library?.identifier;
   }
 
   @override
@@ -170,58 +297,78 @@ class WebPluginsCollector extends RecursiveAstVisitor
 
   // Visits an import/export directive and sees if it's evil
   _visitImportExportDirective(NamespaceDirective node, String outputKey) {
-    if (_shouldSkip()) return;
-
     if (evilLibraries.contains(node.uriContent)) {
-      String info = _getPrettyLocation(node.offset, '${node.uriContent}');
-      pluginMetadata[currentPlugin][outputKey].add(info);
+      pluginMetadata[currentPlugin][outputKey].add(
+        Problem(_getPrettyLocation(node.offset), node.uriContent)
+      );
     }
   }
 
   // Checks what plugins import problematic packages
   @override
   visitImportDirective(ImportDirective node) {
+    if (_shouldSkip()) return super.visitImportDirective(node);
     _visitImportExportDirective(node, _kImportsEvilLibraryKey);
     return super.visitImportDirective(node);
   }
 
-  // Checks if the plugin re-exports problematic packages
+  String _cleanExportUri(String uri) => uri.replaceAll('./', '').replaceAll(RegExp(r"package:[^/]+/"), '');
+
   @override
   visitExportDirective(ExportDirective node) {
-    _visitImportExportDirective(node, _kExportsEvilLibraryKey);
+    if (_shouldSkip()) return super.visitExportDirective(node);
+    exports.add(_cleanExportUri(node.uriContent));
     return super.visitExportDirective(node);
+  }
+
+  @override
+  visitPartDirective(PartDirective node) {
+    if (_shouldSkip()) return super.visitPartDirective(node);
+    exports.add(_cleanExportUri(node.uriContent));
+    return super.visitPartDirective(node);
+  }
+
+  // Checks if instantiation of ojects of classes from problematic packages
+  @override
+  visitInstanceCreationExpression(InstanceCreationExpression node) async {
+    if (_shouldSkip()) return super.visitInstanceCreationExpression(node);
+    DartType type = await _flattenType(node.staticType);
+    String library = _getLibraryForType(type);
+
+    if (evilLibraries.contains(library)) {
+      pluginMetadata[currentPlugin][_kCreatesInstanceKey].add(
+        Problem(_getPrettyLocation(node.offset), type.toString())
+      );
+    }
+
+    return super.visitInstanceCreationExpression(node);
   }
 
   // Visit something that has a returnType and a name, and
   // probably is a function
   _visitFunctionOrMethodDeclaration(dynamic node) async {
-    if (_shouldSkip()) return;
-
-    DartType returnType = node.returnType?.type;
-    DartType flattened;
-
-    if (returnType?.element?.session != null) {
-      TypeSystem ts = await returnType.element.session.typeSystem;
-      flattened = ts.flatten(returnType); // Converts Future<T> and FutureOr<T> (and other <T>s) to T
-    }
-
-    String library = flattened?.element?.library?.identifier;
-
+    DartType flattened = await _flattenType(node.returnType?.type);
+    String library = _getLibraryForType(flattened);
+    print ('$currentFile - $flattened - $library - $node');
     if (evilLibraries.contains(library)) {
-      bool isPrivate = node.name.name.startsWith('_');
-      String info = _getPrettyLocation(node.offset, '$library - ${node.name.name}:${flattened.name}');
+      String methodName = node.name.name;
+      bool isPrivate = _isPrivate(node.offset, methodName: methodName);
       if (isPrivate) {
-        pluginMetadata[currentPlugin][_kUsesEvilLibraryKey].add(info);
+        pluginMetadata[currentPlugin][_kUsesEvilLibraryKey].add(
+          Problem(_getPrettyLocation(node.offset, extraInfo: methodName), flattened.name)
+        );
       } else {
-        pluginMetadata[currentPlugin][_kExposesEvilLibraryKey].add(info);
+        pluginMetadata[currentPlugin][_kExposesEvilLibraryKey].add(
+          Problem(_getPrettyLocation(node.offset, extraInfo: methodName), flattened.name)
+        );
       }
     }
-
   }
 
   // Checks declared methods that return types of the evil packages
   @override
   visitMethodDeclaration(MethodDeclaration node) async {
+    if (_shouldSkip()) return super.visitMethodDeclaration(node);
     await _visitFunctionOrMethodDeclaration(node);
     return super.visitMethodDeclaration(node);
   }
@@ -229,24 +376,31 @@ class WebPluginsCollector extends RecursiveAstVisitor
   // Checks functions that return types of the evil packages
   @override
   visitFunctionDeclaration(FunctionDeclaration node) async {
+    if (_shouldSkip()) return super.visitFunctionDeclaration(node);
     await _visitFunctionOrMethodDeclaration(node);
     return super.visitFunctionDeclaration(node);
+  }
+
+  // Finds method calls of evil libraries (calls to getters/properties)
+  _visitCallsOnEvilLibrary(DartType type, String name, dynamic node) {
+    final String library = _getLibraryForType(type);
+
+    if (evilLibraries.contains(library)) {
+      pluginMetadata[currentPlugin][_kCallsMethodsOfEvilLibraryKey].add(
+        Problem(_getPrettyLocation(node.offset), '$type.$name')
+      );
+    }
   }
 
   // Checks what methods are being called
   @override
   visitMethodInvocation(MethodInvocation node) {
-    if (_shouldSkip()) return null;
+    if (_shouldSkip()) return super.visitMethodInvocation(node);
 
     // It seems realTarget may be null when calling naked functions
-    DartType targetType = node.realTarget?.staticType ?? node.staticInvokeType;
-
-    final String targetLibrary = targetType?.element?.library?.identifier;
-
-    if (evilLibraries.contains(targetLibrary)) {
-      String info = _getPrettyLocation(node.offset, '$targetLibrary - $targetType.${node.methodName.name}');
-      pluginMetadata[currentPlugin][_kCallsMethodsOfEvilLibraryKey].add(info);
-    }
+    DartType type = node.realTarget?.staticType ?? node.staticInvokeType;
+    String name = node.methodName.name;
+    _visitCallsOnEvilLibrary(type, name, node);
 
     return super.visitMethodInvocation(node);
   }
@@ -254,15 +408,11 @@ class WebPluginsCollector extends RecursiveAstVisitor
   // Visit access properties on objects
   @override
   visitPropertyAccess(PropertyAccess node) {
-    if (_shouldSkip()) return null;
+    if (_shouldSkip()) return super.visitPropertyAccess(node);
 
-    DartType targetType = node.realTarget?.staticType;
-    final String targetLibrary = targetType?.element?.library?.identifier;
-
-    if (evilLibraries.contains(targetLibrary)) {
-      String info = _getPrettyLocation(node.offset, '$targetLibrary - $targetType.${node.propertyName.name}');
-      pluginMetadata[currentPlugin][_kCallsMethodsOfEvilLibraryKey].add(info);
-    }
+    DartType type = node.realTarget?.staticType;
+    String name = node.propertyName.name;
+    _visitCallsOnEvilLibrary(type, name, node);
 
     return super.visitPropertyAccess(node);
   }
@@ -270,21 +420,18 @@ class WebPluginsCollector extends RecursiveAstVisitor
   // Visits prefixed identifiers, like static getters (Platform.isIOS...)
   @override
   visitPrefixedIdentifier(PrefixedIdentifier node) {
-    if (_shouldSkip()) return null;
+    if (_shouldSkip()) return super.visitPrefixedIdentifier(node);
 
-    DartType targetType = node.prefix.staticType;
-    final String targetLibrary = targetType?.element?.library?.identifier;
-
-    if (evilLibraries.contains(targetLibrary)) {
-      String info = _getPrettyLocation(node.offset, '$targetLibrary - $targetType.${node.identifier.name}');
-      pluginMetadata[currentPlugin][_kCallsMethodsOfEvilLibraryKey].add(info);
-    }
+    DartType type = node.prefix.staticType;
+    String name = node.identifier.name;
+    _visitCallsOnEvilLibrary(type, name, node);
 
     return super.visitPrefixedIdentifier(node);
   }
 
   @override
   void postAnalysis(AnalysisContext context, DriverCommands cmd) {
+    exports = {};
     cmd.continueAnalyzing = _debuglimit == null || count < _debuglimit;
   }
 
