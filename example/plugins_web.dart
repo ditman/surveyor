@@ -16,7 +16,7 @@ import 'package:surveyor/src/visitors.dart';
 
 final Set<String> evilLibraries = {
   'dart:io',
-  'dart:_http', // Reexported from dart:io 
+  'dart:_http', // Reexported from dart:io
   'dart:_internal', // Reexported from dart:io
 };
 
@@ -45,11 +45,11 @@ final List<String> csvHeader = [
 // typedef PluginProblems = Map<String, Map<String, Set<Problem>>>;
 
 /// Checks if a plugin is going to be easy/hard to port/use in flutter web.
-/// 
+///
 /// Download the target packages with pq/pub_crawl, with something similar to:
-/// 
+///
 /// dart path/to/pub_crawl.dart fetch --criteria flutter --max 100000
-/// 
+///
 /// Then run this like so:
 ///
 /// dart path/to/example/plugins_web.dart third_party/cache
@@ -79,17 +79,20 @@ main(List<String> args) async {
 
   await driver.analyze();
 
-  String csv = const ListToCsvConverter().convert(_formatOutput(pluginMetadata));
+  String csv =
+      const ListToCsvConverter().convert(_formatOutput(pluginMetadata));
 
   print('Writing out.csv...');
   File('out.csv').writeAsStringSync(csv);
 
   print('Writing histograms...');
 
-  String callsCsv = const ListToCsvConverter().convert(_formatHistogram(_getHistogram(pluginMetadata, _kCallsMethodsOfEvilLibraryKey), "Method"));
+  String callsCsv = const ListToCsvConverter().convert(_formatHistogram(
+      _getHistogram(pluginMetadata, _kCallsMethodsOfEvilLibraryKey), "Method"));
   File('calls.csv').writeAsStringSync(callsCsv);
-  
-  String constructorsCsv = const ListToCsvConverter().convert(_formatHistogram(_getHistogram(pluginMetadata, _kCreatesInstanceKey), "Constructor"));
+
+  String constructorsCsv = const ListToCsvConverter().convert(_formatHistogram(
+      _getHistogram(pluginMetadata, _kCreatesInstanceKey), "Constructor"));
   File('constructors.csv').writeAsStringSync(constructorsCsv);
 
   print(
@@ -109,6 +112,7 @@ class HistogramValue {
     totalHits++;
     uniques.add(value);
   }
+
   @override
   String toString() {
     return '$totalHits - $uniques';
@@ -116,12 +120,15 @@ class HistogramValue {
 }
 
 // Counts all distincts values of a given 'key' in the set of Problems
-Map<String, HistogramValue> _getHistogram(Map<String, Map<String, Set<Problem>>> metadata, String key) {
+Map<String, HistogramValue> _getHistogram(
+    Map<String, Map<String, Set<Problem>>> metadata, String key) {
   Map<String, HistogramValue> histogram = <String, HistogramValue>{};
 
   metadata.forEach((String plugin, Map<String, Set<Problem>> meta) {
     meta[key].forEach((Problem problem) {
-      histogram.update(problem.description, (HistogramValue currentValue) => currentValue..addHit(plugin), ifAbsent: () => HistogramValue(plugin));
+      histogram.update(problem.description,
+          (HistogramValue currentValue) => currentValue..addHit(plugin),
+          ifAbsent: () => HistogramValue(plugin));
     });
   });
 
@@ -129,8 +136,11 @@ Map<String, HistogramValue> _getHistogram(Map<String, Map<String, Set<Problem>>>
 }
 
 // Formats the histogram as CSV
-List<List<dynamic>> _formatHistogram(Map<String, HistogramValue> histogram, String key) {
-  List<List<dynamic>> out = [[key, "Count", "Uniques"]];
+List<List<dynamic>> _formatHistogram(
+    Map<String, HistogramValue> histogram, String key) {
+  List<List<dynamic>> out = [
+    [key, "Count", "Uniques"]
+  ];
 
   histogram.forEach((String description, HistogramValue value) {
     out.add([description, value.totalHits, value.uniques.length]);
@@ -172,7 +182,7 @@ List<List<dynamic>> _formatOutput(Map<String, Map<String, Set<Problem>>> metadat
       meta[_kExposesEvilLibraryKey].join("\n"),
       meta[_kCallsMethodsOfEvilLibraryKey].join("\n"),
       meta[_kCreatesInstanceKey].join("\n"),
-      shouldBeReviewed ? "*":"",
+      shouldBeReviewed ? "*" : "",
     ]);
   });
 
@@ -191,7 +201,8 @@ class Problem {
   String library;
   Problem(this.location, this.description, [this.library]);
   @override
-  String toString() => '$location${library != null ? " - " + library : ""} - $description';
+  String toString() =>
+      '$location${library != null ? " - " + library : ""} - $description';
 }
 
 /// If non-zero, stops once limit is reached (for debugging).
@@ -215,7 +226,7 @@ class WebPluginIdentifier extends PubspecVisitor {
         _kCreatesInstanceKey: <Problem>{},
         // Conditional imports? Other things?
       });
-    } catch(e) {
+    } catch (e) {
       // Not a plugin
     }
   }
@@ -224,7 +235,6 @@ class WebPluginIdentifier extends PubspecVisitor {
 // Based on [ApiUseCollector]
 class WebPluginsCollector extends RecursiveAstVisitor
     implements PreAnalysisCallback, PostAnalysisCallback, AstContext {
-
   int count = 0;
   String filePath;
   Folder currentFolder;
@@ -237,7 +247,7 @@ class WebPluginsCollector extends RecursiveAstVisitor
 
   // Returns a boolean indicating if the currently observed symbol is
   // considered public or private
-  bool _isPrivate(int nodeOffset, { String methodName }) {
+  bool _isPrivate(int nodeOffset, {String methodName}) {
     if (methodName.startsWith('_')) {
       return true;
     } else {
@@ -247,7 +257,8 @@ class WebPluginsCollector extends RecursiveAstVisitor
         return false; // Public method defined on public file -> public
       } else {
         // Check if the currentFile has been exported...
-        final bool exported = exports.toList().any((export) => currentFile.endsWith(export));
+        final bool exported =
+            exports.toList().any((export) => currentFile.endsWith(export));
         return !exported;
       }
     }
@@ -256,7 +267,8 @@ class WebPluginsCollector extends RecursiveAstVisitor
   // Returns filename@line:column [extraInfo]
   String _getPrettyLocation(int nodeOffset, {String extraInfo}) {
     var location = lineInfo.getLocation(nodeOffset);
-    String prettyLocation = '$currentFile@${location.lineNumber}:${location.columnNumber}';
+    String prettyLocation =
+        '$currentFile@${location.lineNumber}:${location.columnNumber}';
     if (extraInfo != null) {
       prettyLocation += ' $extraInfo';
     }
@@ -266,7 +278,7 @@ class WebPluginsCollector extends RecursiveAstVisitor
   // Converts Future<T> and FutureOr<T> (and other <T>s) to T
   FutureOr<DartType> _flattenType(DartType type) async {
     DartType flattened;
-    
+
     // Speed up tdlib, because await typeSystem is slowww in that pkg (ended up deleting the pkg ;) )
     // if (!type.displayName.contains('<') || type.displayName.startsWith('Map<')) return type;
     if (type?.element?.session != null) {
@@ -298,9 +310,8 @@ class WebPluginsCollector extends RecursiveAstVisitor
   // Visits an import/export directive and sees if it's evil
   _visitImportExportDirective(NamespaceDirective node, String outputKey) {
     if (evilLibraries.contains(node.uriContent)) {
-      pluginMetadata[currentPlugin][outputKey].add(
-        Problem(_getPrettyLocation(node.offset), node.uriContent)
-      );
+      pluginMetadata[currentPlugin][outputKey]
+          .add(Problem(_getPrettyLocation(node.offset), node.uriContent));
     }
   }
 
@@ -312,7 +323,8 @@ class WebPluginsCollector extends RecursiveAstVisitor
     return super.visitImportDirective(node);
   }
 
-  String _cleanExportUri(String uri) => uri.replaceAll('./', '').replaceAll(RegExp(r"package:[^/]+/"), '');
+  String _cleanExportUri(String uri) =>
+      uri.replaceAll('./', '').replaceAll(RegExp(r"package:[^/]+/"), '');
 
   @override
   visitExportDirective(ExportDirective node) {
@@ -336,9 +348,8 @@ class WebPluginsCollector extends RecursiveAstVisitor
     String library = _getLibraryForType(type);
 
     if (evilLibraries.contains(library)) {
-      pluginMetadata[currentPlugin][_kCreatesInstanceKey].add(
-        Problem(_getPrettyLocation(node.offset), type.toString())
-      );
+      pluginMetadata[currentPlugin][_kCreatesInstanceKey]
+          .add(Problem(_getPrettyLocation(node.offset), type.toString()));
     }
 
     return super.visitInstanceCreationExpression(node);
@@ -349,7 +360,6 @@ class WebPluginsCollector extends RecursiveAstVisitor
   _visitFunctionOrMethodDeclaration(dynamic node) async {
     DartType flattened = await _flattenType(node.returnType?.type);
     String library = _getLibraryForType(flattened);
-    print ('$currentFile - $flattened - $library - $node');
     if (evilLibraries.contains(library)) {
       String methodName = node.name.name;
       bool isPrivate = _isPrivate(node.offset, methodName: methodName);
@@ -386,9 +396,8 @@ class WebPluginsCollector extends RecursiveAstVisitor
     final String library = _getLibraryForType(type);
 
     if (evilLibraries.contains(library)) {
-      pluginMetadata[currentPlugin][_kCallsMethodsOfEvilLibraryKey].add(
-        Problem(_getPrettyLocation(node.offset), '$type.$name')
-      );
+      pluginMetadata[currentPlugin][_kCallsMethodsOfEvilLibraryKey]
+          .add(Problem(_getPrettyLocation(node.offset), '$type.$name'));
     }
   }
 
