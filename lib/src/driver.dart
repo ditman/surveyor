@@ -110,7 +110,7 @@ class Driver {
       if (cmd.continueAnalyzing) {
         // TODO move this to the config file
         AnalysisContextCollection collection = AnalysisContextCollection(
-            includedPaths: [root], excludedPaths: ['$root/example', '$root/test'], resourceProvider: resourceProvider);
+            includedPaths: [root], excludedPaths: ['$root/example', '$root/test', '$root/example2'], resourceProvider: resourceProvider);
 
         for (AnalysisContext context in collection.contexts) {
           // Add custom lints.
