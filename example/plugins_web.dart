@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:analyzer/dart/analysis/analysis_context.dart';
@@ -33,13 +34,28 @@ final List<String> csvHeader = [
   "# Public returns",
   "# Calls",
   "# Instantiations",
+  "Popularity",
+  "Overall score",
   "Imports",
   "Private returns",
   "Public returns",
   "Calls",
   "Instantiations",
-  "!!!"
 ];
+
+/// Parses an index.json file produced by pub_crawl, and returns a Map that this script can use
+Map<String, DownloadedPluginMetadata> _parseDownloadedMetadataFile(File json) {
+  Map<String, DownloadedPluginMetadata> metadata = {};
+  // Decode json...
+  Map<String, dynamic> parsedJson = jsonDecode(json.readAsStringSync());
+  // parsedJson is a Map<String, Map<String, dynamic>> but we need to shuffle the data
+  parsedJson.forEach((String k, dynamic v) {
+    String pluginName = v['sourcePath'];
+    metadata[pluginName] = DownloadedPluginMetadata(score: v['score'], popularity: v['popularity'], name: k);
+  });
+
+  return metadata;
+}
 
 // https://github.com/dart-lang/sdk/issues/2626 :sad_trombone:
 // typedef PluginProblems = Map<String, Map<String, Set<Problem>>>;
@@ -56,6 +72,12 @@ final List<String> csvHeader = [
 main(List<String> args) async {
   if (args.length == 1) {
     final dir = args[0];
+    File downloadedMetadata = File('$dir/../index.json');
+    if (downloadedMetadata.existsSync()) {
+      // Load it
+      print("Metadata file found!");
+      downloadPluginMetadata = _parseDownloadedMetadataFile(downloadedMetadata);
+    }
     if (!File('$dir/pubspec.yaml').existsSync()) {
       print("Recursing into '$dir'...");
       args = Directory(dir).listSync().map((f) => f.path).toList()..sort();
@@ -164,7 +186,8 @@ List<List<dynamic>> _formatOutput(Map<String, Map<String, Set<Problem>>> metadat
 
     bool shouldBeReviewed = 
       (numImports > 0 && (numProblems <= numImports)) // Unused imports?
-      || (numImports == 0 && numProblems > 0); // Used bad lib without imports?
+      || (numImports == 0 && numProblems > 0) // Used bad lib without imports?
+      || downloadPluginMetadata[plugin] == null; // How did we get here?
 
     if (shouldBeReviewed) {
       print('*** Needs review: $plugin');
@@ -177,12 +200,13 @@ List<List<dynamic>> _formatOutput(Map<String, Map<String, Set<Problem>>> metadat
       meta[_kExposesEvilLibraryKey].length,
       meta[_kCallsMethodsOfEvilLibraryKey].length,
       meta[_kCreatesInstanceKey].length,
+      downloadPluginMetadata[plugin]?.popularity ?? "",
+      downloadPluginMetadata[plugin]?.score ?? "",
       meta[_kImportsEvilLibraryKey].join("\n"),
       meta[_kUsesEvilLibraryKey].join("\n"),
       meta[_kExposesEvilLibraryKey].join("\n"),
       meta[_kCallsMethodsOfEvilLibraryKey].join("\n"),
       meta[_kCreatesInstanceKey].join("\n"),
-      shouldBeReviewed ? "*" : "",
     ]);
   });
 
@@ -193,7 +217,19 @@ int dirCount;
 
 Set<String> plugins = {};
 // plugin -> category -> Set<Problem>
-Map<String, Map<String, Set<Problem>>> pluginMetadata = Map();
+Map<String, Map<String, Set<Problem>>> pluginMetadata = {};
+
+// The metadata that was downloaded by pub_crawl
+Map<String, DownloadedPluginMetadata> downloadPluginMetadata = {};
+
+class DownloadedPluginMetadata {
+  String name;
+  double score;
+  double popularity;
+  DownloadedPluginMetadata({this.name, this.score, this.popularity});
+  @override
+  String toString() => 'Plugin: $name. Popularity: $popularity. Overall: $score';
+}
 
 class Problem {
   String location;
